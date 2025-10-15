@@ -80,6 +80,34 @@ ip_country=US
 write_config "$GSE_STEAM_SETTINGS/configs.main.ini" "$MAIN_CONFIG"
 write_config "$GSE_STEAM_SETTINGS/configs.overlay.ini" "$OVERLAY_CONFIG"
 write_config "$GSE_STEAM_SETTINGS/configs.user.ini" "$USER_CONFIG"
-echo
-echo "Make sure to edit $GSE_STEAM_SETTINGS/configs.user.ini"
-echo "The account ID is found in your profile page on steam, see the URL. (or use a random one)"
+
+END_MESSAGE="
+----------------------------------------------------------------------
+Make sure to edit $GSE_STEAM_SETTINGS/configs.user.ini
+- The account ID is found in your profile page on steam, 
+	see the URL. (or use a random one)
+
+
+For syncing the saves between multiple computers, use syncthing:
+- Make synced folders in the app like:
+	~/.config/unity3d
+	~/Games/umu/umu-default/drive_c/users/steamuser
+	~/.local/share/GSE Saves
+
+	(there are more, like for factorio, minecraft, etc.
+		scattered in the filesystem, but this is the bulk)
+	(also, ~/.wine could have some user data/saves in your system,
+		if you've used it)
+
+- Ignore pattern in folder configs like this:
+
+(?d)(?i)*cache*
+(?d)(?i)*crashes*/
+*.log
+
+
+- Add some type of file versioning in folder configs
+-----------------------------------------------------------------------
+"
+
+echo "$END_MESSAGE"
