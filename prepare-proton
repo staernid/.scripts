@@ -1,0 +1,85 @@
+#!/bin/bash
+
+# Define directories
+UMU_DIR="$HOME/Games/umu/umu-default/drive_c/users/steamuser/AppData/Roaming"
+GSE_DIR="$HOME/.local/share/GSE Saves"
+GSE_STEAM_SETTINGS="$GSE_DIR/steam_settings"
+
+# Create directories if they don't exist
+mkdir -p "$UMU_DIR"
+mkdir -p "$GSE_STEAM_SETTINGS"
+
+# Create symlink only if it doesn't already exist
+if [ ! -e "$UMU_DIR/GSE Saves" ]; then
+    echo "Creating symlink to GSE Saves..."
+    ln -s "$GSE_DIR/" "$UMU_DIR/"
+else
+    echo "Symlink to GSE Saves already exists. Skipping."
+fi
+
+# Function to write config file with a safety check
+write_config() {
+    local file_path="$1"
+    local config_content="$2"
+
+    if [ ! -f "$file_path" ]; then
+        echo "Creating $file_path..."
+        echo "$config_content" > "$file_path"
+    else
+        echo "$file_path already exists. Skipping."
+    fi
+}
+
+# Define config contents for each file
+MAIN_CONFIG="[main::general]
+new_app_ticket=1
+gc_token=1
+steam_deck=0
+enable_account_avatar=0
+immediate_gameserver_stats=0
+matchmaking_server_list_actual_type=0
+matchmaking_server_details_via_source_query=0
+
+[main::stats]
+disable_leaderboards_create_unknown=0
+allow_unknown_stats=0
+stat_achievement_progress_functionality=1
+save_only_higher_stat_achievement_progress=1
+paginated_achievements_icons=10
+
+[main::connectivity]
+disable_lan_only=1
+disable_networking=0
+listen_port=47584
+offline=0
+disable_sharing_stats_with_gameserver=0
+disable_source_query=0
+share_leaderboards_over_network=1
+disable_lobby_creation=0
+download_steamhttp_requests=1
+
+[main::misc]
+achievements_bypass=0
+force_steamhttp_success=0
+disable_steamoverlaygameid_env_var=0
+enable_steam_preowned_ids=0
+"
+
+OVERLAY_CONFIG="[overlay::general]
+enable_experimental_overlay=1
+"
+
+USER_CONFIG="[user::general]
+account_steamid=YOUR_64ID
+account_name=YOUR_NAME
+language=english
+ip_country=US
+"
+
+# Write each config file, with checks
+write_config "$GSE_STEAM_SETTINGS/configs.main.ini" "$MAIN_CONFIG"
+write_config "$GSE_STEAM_SETTINGS/configs.overlay.ini" "$OVERLAY_CONFIG"
+write_config "$GSE_STEAM_SETTINGS/configs.user.ini" "$USER_CONFIG"
+echo
+echo "Make sure to edit $GSE_STEAM_SETTINGS/configs.user.ini"
+echo "The account ID is found in your profile page on steam, see the URL. (or use a random one)"
