@@ -1,51 +1,59 @@
 #!/bin/bash
 
+# Exit immediately if a command exits with a non-zero status.
 set -e
 
 # Configuration
-USER=$(whoami)
+# Path to the Lutris database
 DB_PATH="$HOME/.local/share/lutris/pga.db"
+# Directories for downloaded art
 COVERS_DIR="$HOME/.cache/lutris/coverart"
+BANNERS_DIR="$HOME/.cache/lutris/banners"
+# File to store the SteamGridDB API key
 API_KEY_FILE="$HOME/.config/lutris_art_apikey.txt"
-DIMENSIONS="600x900" # Vertical covers
-#DIMENSIONS="460x215" # Banners
+# Dimensions for the art to download
+COVER_DIMENSIONS="600x900"
+BANNER_DIMENSIONS="460x215"
+
+# --- Setup and Checks ---
 
 # Create necessary directories
 mkdir -p "$COVERS_DIR"
+mkdir -p "$BANNERS_DIR"
 mkdir -p "$(dirname "$API_KEY_FILE")"
 
-# Check for required tools
+# Check for required command-line tools
 for cmd in sqlite3 jq curl; do
-  if ! command -v $cmd &>/dev/null; then
-    echo "Error: $cmd is not installed"
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "Error: $cmd is not installed. Please install it to continue."
     exit 1
   fi
 done
 
-# Get or set API key
+# Get or prompt for the SteamGridDB API key
 get_api_key() {
   if [[ -f "$API_KEY_FILE" ]]; then
     API_KEY=$(cat "$API_KEY_FILE")
   else
-    echo "You need a SteamGridDB API key."
+    echo "You need a SteamGridDB API key to download art."
     echo "Get one at: https://www.steamgriddb.com/profile/preferences/api"
     read -p "Enter your API key: " API_KEY
 
-    # Test the API key
+    # Test the API key with a simple search
     response=$(curl -s -H "Authorization: Bearer $API_KEY" \
-      "https://www.steamgriddb.com/api/v2/grids/game/1?dimensions=$DIMENSIONS")
+      "https://www.steamgriddb.com/api/v2/search/autocomplete/DOOM")
 
     if [[ $(echo "$response" | jq -r '.success') != "true" ]]; then
-      echo "Invalid API key"
+      echo "Invalid API key. Please try again."
       exit 1
     fi
 
-    echo "$API_KEY" >"$API_KEY_FILE"
-    echo "API key saved."
+    echo "$API_KEY" > "$API_KEY_FILE"
+    echo "API key saved to $API_KEY_FILE."
   fi
 }
 
-# Search for a game on SteamGridDB
+# Search for a game on SteamGridDB and return its ID
 search_game() {
   local game_name=$1
   curl -s -H "Authorization: Bearer $API_KEY" \
@@ -53,62 +61,84 @@ search_game() {
     jq -r '.data[0].id // empty'
 }
 
-# Download cover art
-download_cover() {
-  local game_name=$1
-  local game_id=$2
+# --- Main Download Functionality ---
 
-  echo "Downloading cover for $game_name"
+# Download a specific type of art (cover or banner) for a game
+download_art() {
+  local game_type=$1    # e.g., "cover" or "banner"
+  local game_slug=$2    # e.g., "the-witcher-3"
+  local game_id=$3      # e.g., "242"
+  local dimensions=$4   # e.g., "600x900"
+  local output_dir=$5   # e.g., "$COVERS_DIR"
 
-  # Get the image URL
-  image_url=$(curl -s -H "Authorization: Bearer $API_KEY" \
-    "https://www.steamgriddb.com/api/v2/grids/game/$game_id?dimensions=$DIMENSIONS" |
-    jq -r '.data[0].url // empty')
+  local api_endpoint
+  local file_path="$output_dir/$game_slug.jpg"
+
+  api_endpoint="https://www.steamgriddb.com/api/v2/grids/game/$game_id?dimensions=$dimensions"
+
+  echo "  - Downloading $game_type for $game_slug..."
+
+  # Get the image URL from the API response
+  image_url=$(curl -s -H "Authorization: Bearer $API_KEY" "$api_endpoint" | jq -r '.data[0].url // empty')
 
   if [[ -z "$image_url" ]]; then
-    echo "No cover found for $game_name"
+    echo "  - No $game_type found for $game_slug. Skipping."
     return
   fi
 
-  # Download the image
-  curl -s -o "$COVERS_DIR/$game_name.jpg" "$image_url"
+  # Download the image and save it to the specified directory
+  curl -s -o "$file_path" "$image_url"
+  if [[ $? -eq 0 ]]; then
+    echo "  - Successfully downloaded $game_type to $file_path"
+  else
+    echo "  - Failed to download $game_type for $game_slug"
+  fi
 }
 
-# Main function
-main() {
-  echo "Welcome to Lutris Cover Art Downloader!"
-  echo "Downloading covers ($DIMENSIONS)"
+# --- Main Script Execution ---
 
+main() {
+  echo "Welcome to Lutris Art Downloader!"
   get_api_key
 
-  # Get games from Lutris database
+  # Check if the Lutris database exists
   if [[ ! -f "$DB_PATH" ]]; then
     echo "Error: Lutris database not found at $DB_PATH"
     exit 1
   fi
 
-  # Process each game
+  # Get games from Lutris database and process each one
   sqlite3 "$DB_PATH" "SELECT slug FROM games" | while read -r game_slug; do
-    game_name=$(echo "$game_slug" | tr '-' ' ')
-
-    # Skip if cover already exists
-    if [[ -f "$COVERS_DIR/$game_slug.jpg" ]]; then
-      echo "Cover already exists for $game_name"
-      continue
-    fi
-
-    # Search for the game
+    echo "Processing game: $game_slug"
+    
+    # Check if a game ID exists. We only need to do this once per game.
     game_id=$(search_game "$game_slug")
     if [[ -z "$game_id" ]]; then
-      echo "No match found for $game_name"
+      echo "  - No match found on SteamGridDB for $game_slug. Skipping."
+      echo "---"
       continue
     fi
 
-    # Download the cover
-    download_cover "$game_slug" "$game_id"
+    # Check and download the cover if it doesn't exist
+    if [[ ! -f "$COVERS_DIR/$game_slug.jpg" ]]; then
+      download_art "cover" "$game_slug" "$game_id" "$COVER_DIMENSIONS" "$COVERS_DIR"
+    else
+      echo "  - Cover already exists for $game_slug. Skipping."
+    fi
+
+    # Check and download the banner if it doesn't exist
+    if [[ ! -f "$BANNERS_DIR/$game_slug.jpg" ]]; then
+      download_art "banner" "$game_slug" "$game_id" "$BANNER_DIMENSIONS" "$BANNERS_DIR"
+    else
+      echo "  - Banner already exists for $game_slug. Skipping."
+    fi
+
+    echo "---"
   done
 
-  echo "Done! Restart Lutris to see changes."
+  echo "Done! All available art has been downloaded. Restart Lutris to see the changes."
 }
 
+# Run the main function
 main
+
