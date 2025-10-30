@@ -1,0 +1,47 @@
+#!/bin/bash
+
+FFMPEG_OPTIONS=(
+    -c:v libsvtav1
+    -crf 38
+    -preset 4
+    -pix_fmt yuv420p10le
+    -svtav1-params "tune=2:sharpness=1:qm-min=2:chroma-qm-max=15:qp-scale-compress-strength=2:enable-variance-boost=1:variance-boost-strength=1:variance-octile=4"
+    -c:a copy
+)
+
+# Use 'shopt -s nullglob' to prevent the loop from running once with literal '*.mp4' 
+# if no files are found. This is a crucial fix for the file-checking logic.
+shopt -s nullglob
+
+echo "--- Starting AV1 Batch Conversion ---"
+echo "--- Searching for *.mp4 files..."
+
+# Check if any .mp4 files exist before starting the loop
+MP4_FILES=(*.mp4)
+
+if [ ${#MP4_FILES[@]} -eq 0 ]; then
+    echo "--- No .mp4 files found to process."
+else
+    # Iterate over the array of files found
+    for INPUT_FILE in "${MP4_FILES[@]}"; do
+        # Inside the loop, you only need to process the file, 
+        # as nullglob ensures it's a real file if the loop runs.
+        OUTPUT_FILE="${INPUT_FILE%.mp4}_AV1.mkv"
+
+        echo "--- Processing: **$INPUT_FILE**"
+        echo "--- Output will be: **$OUTPUT_FILE**"
+
+        # The full command uses -i first, then the options, then the output file
+        ffmpeg -i "$INPUT_FILE" "${FFMPEG_OPTIONS[@]}" "$OUTPUT_FILE"
+
+        # Check the exit status of the last command (ffmpeg)
+        if [ $? -eq 0 ]; then
+            echo "--- **Finished** processing **$INPUT_FILE** (Success)"
+        else
+            echo "--- **Error** processing **$INPUT_FILE** (FFmpeg failed)"
+        fi
+        echo "-------------------------------------"
+    done
+fi
+
+echo "--- **Batch processing complete!**"
