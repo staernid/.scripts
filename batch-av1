@@ -39,6 +39,7 @@ else
             echo "--- **Finished** processing **$INPUT_FILE** (Success)"
         else
             echo "--- **Error** processing **$INPUT_FILE** (FFmpeg failed)"
+            echo "--- **Error** processing **$INPUT_FILE** (FFmpeg failed)" >> ./ffmpeg-error-log.txt
         fi
         echo "-------------------------------------"
     done

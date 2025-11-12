@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# Define the file extensions to search for
+EXTENSIONS=(jpg jpeg JPG JPEG)
+
+# Set the options for cjxl (e.g., -d 0 for lossless)
+# Check 'cjxl --help' for other options
+CJXL_OPTIONS="-d 0" 
+
+echo "Starting JPEG to JXL conversion..."
+
+# Loop through all defined extensions
+for ext in "${EXTENSIONS[@]}"; do
+    # Find files with the current extension
+    for file in *."${ext}"; do
+        # Check if the file exists (handles the case where no files match the glob)
+        if [[ -f "${file}" ]]; then
+            
+            # Construct the output filename (.jxl)
+            output_file="${file%.*}.jxl"
+            
+            echo "Converting ${file} to ${output_file}..."
+            
+            # Run the cjxl command
+            # The '$CJXL_OPTIONS' variable is used for any desired settings
+            if cjxl --lossless_jpeg=1 "${file}" "${output_file}" $CJXL_OPTIONS; then
+                # If conversion is successful, remove the original file
+                echo "Conversion successful. Removing original ${file}."
+                rm "${file}"
+            else
+                echo "ERROR: cjxl failed for ${file}. Keeping original file."
+            fi
+        fi
+    done
+done
+
+echo "Conversion complete."

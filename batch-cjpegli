@@ -1,0 +1,34 @@
+#!/bin/bash
+
+# Define the file extensions to search for
+EXTENSIONS=(jpg jpeg JPG JPEG)
+
+JPEGLI_OPTIONS="" 
+
+JPEGLI_CMD="docker run --rm -v "$(pwd):/work" imazen/jpegli-tools cjpegli"
+
+echo "Starting JPEG to JXL conversion..."
+
+# Loop through all defined extensions
+for ext in "${EXTENSIONS[@]}"; do
+    # Find files with the current extension
+    for file in *."${ext}"; do
+        # Check if the file exists (handles the case where no files match the glob)
+        if [[ -f "${file}" ]]; then
+            
+            output_file="${file%.*}.jpg"
+            
+            echo "Converting ${file} to ${output_file}..."
+            
+            if $JPEGLI_CMD "${file}" "${output_file}" $JPEGLI_OPTIONS; then
+                # If conversion is successful, remove the original file
+                echo "Conversion successful. Removing original ${file}."
+                rm "${file}"
+            else
+                echo "ERROR: cjpegli failed for ${file}. Keeping original file."
+            fi
+        fi
+    done
+done
+
+echo "Conversion complete."
