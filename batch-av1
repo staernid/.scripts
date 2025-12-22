@@ -1,9 +1,14 @@
 #!/bin/bash
 
+# https://github.com/Jaded-Encoding-Thaumaturgy/JET-guide/blob/master/docs/encoding/svtav1.md
+# TODO: check if anime mode is necessary
+
 # Default values
-CRF=38
+CRF=25
 PRESET=4
 ANIME_MODE=false
+DRY_RUN=false
+USE_OPUS=false
 FILES=()
 
 # Display help message
@@ -13,12 +18,14 @@ show_help() {
     echo "Batch convert video files to AV1 using SVT-AV1."
     echo ""
     echo "Options:"
-    echo "  -a, --anime         Enable anime mode (adds film-grain=4)"
+    echo "  -a, --anime         Enable anime mode (adds more film-grain), TODO: check if this is necessary"
     echo "  -c, --crf VALUE     Set CRF value (default: $CRF)"
     echo "  -p, --preset VALUE  Set SVT-AV1 preset (default: $PRESET)"
+    echo "  -o, --opus          Transcode audio to Opus (default: copy)"
+    echo "  -d, --dry-run       Show what would be done without encoding"
     echo "  -h, --help          Show this help message"
     echo ""
-    echo "If no files are provided, all .mp4 files in the current directory will be processed."
+    echo "If no files are provided, common video files (.mp4, .mkv, .webm, .mov, .avi) in the current directory will be processed."
 }
 
 # Parse arguments
@@ -36,6 +43,14 @@ while [[ $# -gt 0 ]]; do
             PRESET="$2"
             shift 2
             ;;
+        -o|--opus)
+            USE_OPUS=true
+            shift
+            ;;
+        -d|--dry-run)
+            DRY_RUN=true
+            shift
+            ;;
         -h|--help)
             show_help
             exit 0
@@ -52,10 +67,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# If no files provided, default to *.mp4
+# Check for ffmpeg and libsvtav1
+if ! command -v ffmpeg &> /dev/null; then
+    echo "Error: ffmpeg is not installed."
+    exit 1
+fi
+
+if ! ffmpeg -encoders 2>/dev/null | grep -q libsvtav1; then
+    echo "Error: ffmpeg does not support libsvtav1. Please install a compatible version."
+    exit 1
+fi
+
+# If no files provided, default to common video formats
 if [ ${#FILES[@]} -eq 0 ]; then
     shopt -s nullglob
-    FILES=(*.mp4)
+    FILES=(*.mp4 *.mkv *.webm *.mov *.avi)
 fi
 
 if [ ${#FILES[@]} -eq 0 ]; then
@@ -64,23 +90,31 @@ if [ ${#FILES[@]} -eq 0 ]; then
 fi
 
 # Construct SVT-AV1 parameters
-SVTAV1_PARAMS="tune=2:sharpness=1:qm-min=2:chroma-qm-max=15:qp-scale-compress-strength=2:enable-variance-boost=1:variance-boost-strength=1:variance-octile=4"
+SVTAV1_PARAMS="tune=1:enable-variance-boost=1:tf-strength=1:sharpness=1:tile-columns=1:film-grain=4:luminance-qp-bias=25"
+
 if [ "$ANIME_MODE" = true ]; then
-    SVTAV1_PARAMS="$SVTAV1_PARAMS:film-grain=4"
-    echo "--- Anime mode enabled ---"
+    SVTAV1_PARAMS="${SVTAV1_PARAMS/film-grain=4/film-grain=8}"
+fi
+
+AUDIO_OPTS=(-c:a copy)
+if [ "$USE_OPUS" = true ]; then
+    AUDIO_OPTS=(-c:a libopus -b:a 128k)
 fi
 
 FFMPEG_OPTIONS=(
+    -map 0
     -c:v libsvtav1
     -crf "$CRF"
     -preset "$PRESET"
     -pix_fmt yuv420p10le
     -svtav1-params "$SVTAV1_PARAMS"
-    -c:a copy
+    "${AUDIO_OPTS[@]}"
+    -c:s copy
 )
 
 echo "--- Starting AV1 Batch Conversion ---"
-echo "--- CRF: $CRF, Preset: $PRESET"
+echo "--- CRF: $CRF, Preset: $PRESET, Anime: $ANIME_MODE, Opus: $USE_OPUS"
+[ "$DRY_RUN" = true ] && echo "--- DRY RUN MODE ENABLED ---"
 
 for INPUT_FILE in "${FILES[@]}"; do
     if [[ ! -f "$INPUT_FILE" ]]; then
@@ -88,22 +122,31 @@ for INPUT_FILE in "${FILES[@]}"; do
         continue
     fi
 
-    # Determine output filename
-    filename=$(basename -- "$INPUT_FILE")
-    extension="${filename##*.}"
-    filename="${filename%.*}"
-    OUTPUT_FILE="${filename}_AV1.mkv"
+    # Determine output filename in the same directory as input
+    DIR=$(dirname "$INPUT_FILE")
+    BASE=$(basename "$INPUT_FILE")
+    NAME="${BASE%.*}"
+    OUTPUT_FILE="${DIR}/${NAME}_AV1.mkv"
+
+    # Avoid self-overwrite (e.g. if input is already _AV1.mkv)
+    if [[ "$INPUT_FILE" == "$OUTPUT_FILE" ]]; then
+        OUTPUT_FILE="${DIR}/${NAME}_AV1_new.mkv"
+    fi
 
     echo "--- Processing: $INPUT_FILE"
     echo "--- Output: $OUTPUT_FILE"
 
-    ffmpeg -i "$INPUT_FILE" "${FFMPEG_OPTIONS[@]}" "$OUTPUT_FILE"
-
-    if [ $? -eq 0 ]; then
-        echo "--- Finished: $INPUT_FILE (Success)"
+    if [ "$DRY_RUN" = true ]; then
+        echo "ffmpeg -i \"$INPUT_FILE\" ${FFMPEG_OPTIONS[*]} \"$OUTPUT_FILE\""
     else
-        echo "--- Error: $INPUT_FILE (FFmpeg failed)"
-        echo "$(date): Error processing $INPUT_FILE" >> ./ffmpeg-error-log.txt
+        ffmpeg -i "$INPUT_FILE" "${FFMPEG_OPTIONS[@]}" "$OUTPUT_FILE" -y
+
+        if [ $? -eq 0 ]; then
+            echo "--- Finished: $INPUT_FILE (Success)"
+        else
+            echo "--- Error: $INPUT_FILE (FFmpeg failed)"
+            echo "$(date): Error processing $INPUT_FILE" >> ./ffmpeg-error-log.txt
+        fi
     fi
     echo "-------------------------------------"
 done
