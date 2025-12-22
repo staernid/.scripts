@@ -1,0 +1,14 @@
+#!/bin/sh
+set -xe
+
+DIRR=$HOME/git/stable-diffusion.cpp
+
+git clone --recursive https://github.com/leejet/stable-diffusion.cpp $DIRR || echo already cloned
+cd $DIRR
+git pull origin master 
+git submodule init
+git submodule update
+mkdir -p build && cd build
+cmake .. -DSD_CUDA=ON
+cmake --build . --config Release -- -j$(nproc)
+ln -s $DIRR/build/bin/sd $HOME/.local/bin

@@ -1,0 +1,2 @@
+#!/bin/sh
+ffmpeg -i "$@" -vn -acodec copy output-audio.mkv

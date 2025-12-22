@@ -1,0 +1,272 @@
+#!/bin/bash
+
+# Configuration
+LLM_API_BASE="http://127.0.0.1:8080/v1"
+LLM_MODEL="qwen3-vl-8b"
+LLM_API_KEY="sk-no-key-required"
+
+# Function to display usage
+usage() {
+	echo "Usage: $0 <command> [args]"
+	echo "Commands:"
+	echo "  zoom [prompt]  Take a screenshot and zoom based on prompt"
+	echo "  list           List available models"
+	echo "  help           Show this help message"
+	exit 1
+}
+
+function list_models() {
+	curl -s "$LLM_API_BASE/models" | jq -r '.data[].id'
+}
+
+function take_screenshot() {
+	local output_file=$(mktemp --suffix=.png -p /dev/shm)
+	trap "rm -f -- '$output_file'" EXIT
+
+	echo "Taking screenshot..."
+	spectacle --current --background --nonotify -o "$output_file"
+
+	if [ ! -f "$output_file" ]; then
+		echo "Error: Failed to take screenshot."
+		exit 1
+	fi
+	echo "$output_file"
+}
+
+function query_vlm() {
+	local image_path="$1"
+	local prompt="$2"
+	local extra_json="$3"
+
+	local base64_image=$(base64 -w 0 "$image_path")
+
+	# Build basic structure using jq for safety
+	local payload=$(jq -n \
+		--arg model "$LLM_MODEL" \
+		--arg prompt "$prompt" \
+		--arg b64 "$base64_image" \
+		'{
+			model: $model,
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: $prompt },
+						{ type: "image_url", image_url: { url: ("data:image/png;base64," + $b64) } }
+					]
+				}
+			]
+		}')
+
+	if [ -n "$extra_json" ]; then
+		# Merge extra_json into payload
+		payload=$(echo "$payload" | jq -s '.[0] * .[1]' - <(echo "$extra_json"))
+	fi
+
+	echo "Calling LLM..." >&2
+	curl -s -X POST \
+		"$LLM_API_BASE/chat/completions" \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer $LLM_API_KEY" \
+		-d "$payload"
+}
+
+function get_zoom_bbox() {
+	local image_path="$1"
+	local prompt="$2"
+
+	read -r -d '' tools_json << EOF
+{
+	"tools": [
+	{
+		"type": "function",
+		"function": {
+			"name": "image_zoom_in_tool",
+			"description": "Crop and zoom in on specific regions of an image by cropping it based on a bounding box (bbox) and an optional object label",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"bbox_list": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"properties": {
+								"bbox_2d": {
+									"type": "array",
+									"items": { "type": "number" },
+									"minItems": 4,
+									"maxItems": 4,
+									"description": "The bounding box of the region to zoom in, as [x1, y1, x2, y2], where (x1, y1) is the top-left corner and (x2, y2) is the bottom-right corner relative coordinates in [0, 1000]."
+								},
+							"label": {
+								"type": "string",
+								"description": "Optional name or label of the object in the specified bounding box"
+							}
+					},
+				"required": ["bbox_2d"]
+			}
+	},
+	"img_idx": {
+		"type": "string",
+		"description": "The local uuid of input image"
+	}
+	},
+	"required": ["bbox_list", "img_idx"]
+	}
+	}
+	}
+	],
+	"tool_choice": {
+		"type": "function",
+		"function": {
+			"name": "image_zoom_in_tool"
+		}
+	}
+}
+EOF
+
+	local response=$(query_vlm "$image_path" "$prompt" "$tools_json")
+
+	if [ -z "$response" ]; then
+		echo "Error: Empty response from LLM." >&2
+		return 1
+	fi
+
+	local tool_calls=$(echo "$response" | jq -r '.choices[0].message.tool_calls[0].function.arguments')
+
+	if [ "$tool_calls" == "null" ] || [ -z "$tool_calls" ]; then
+		echo "LLM did not return a tool call for image_zoom_in_tool." >&2
+		echo "LLM Response: $response" >&2
+		return 1
+	fi
+
+	echo "$tool_calls"
+}
+
+function crop_and_zoom_image() {
+	local image_path="$1"
+	local tool_calls="$2"
+
+	# Parse bbox_list from TOOL_CALLS
+	local bbox_2d_array=$(echo "$tool_calls" | jq -r '.bbox_list[0].bbox_2d')
+	local label=$(echo "$tool_calls" | jq -r '.bbox_list[0].label // ""')
+
+	# Convert BBOX_2D_ARRAY to individual coordinates
+	local x1=$(echo "$bbox_2d_array" | jq -r '.[0]')
+	local y1=$(echo "$bbox_2d_array" | jq -r '.[1]')
+	local x2=$(echo "$bbox_2d_array" | jq -r '.[2]')
+	local y2=$(echo "$bbox_2d_array" | jq -r '.[3]')
+
+	# Get original image dimensions
+	local orig_width=$(identify -format "%w" "$image_path")
+	local orig_height=$(identify -format "%h" "$image_path")
+
+	# Convert relative coordinates (0-1000) to absolute pixels using integer arithmetic
+	local abs_x1=$(( ($x1 * orig_width) / 1000 ))
+	local abs_y1=$(( ($y1 * orig_height) / 1000 ))
+	local abs_x2=$(( ($x2 * orig_width) / 1000 ))
+	local abs_y2=$(( ($y2 * orig_height) / 1000 ))
+	local crop_width=$(echo "scale=0; $abs_x2 - $abs_x1" | bc -l)
+	local crop_height=$(echo "scale=0; $abs_y2 - $abs_y1" | bc -l)
+
+	# Ensure minimum crop size
+	local min_dim=32
+	if (( $(echo "$crop_width < $min_dim" | bc -l) )) || (( $(echo "$crop_height < $min_dim" | bc -l) )); then
+		echo "Warning: Bounding box is too small. Adjusting crop dimensions." >&2
+		crop_width=$min_dim
+		crop_height=$min_dim
+	fi
+
+	# Target pixels for resizing
+	local target_pixels=262144
+	local current_pixels=$(echo "scale=0; $crop_width * $crop_height" | bc -l)
+
+	local new_width=$crop_width
+	local new_height=$crop_height
+
+	if (( $(echo "$current_pixels < $target_pixels" | bc -l) )); then
+		local beta=$(echo "sqrt($target_pixels / ($crop_width * $crop_height))" | bc -l)
+		new_width=$(printf "%.0f" $(echo "scale=0; $crop_width * $beta" | bc -l))
+		new_height=$(printf "%.0f" $(echo "scale=0; $crop_height * $beta" | bc -l))
+	fi
+
+	# Round to nearest 32
+	new_width=$(printf "%.0f" $(echo "scale=0; ($new_width + 16) / 32 * 32" | bc -l))
+	new_height=$(printf "%.0f" $(echo "scale=0; ($new_height + 16) / 32 * 32" | bc -l))
+
+	# Ensure dimensions are at least 32x32
+	new_width=$((new_width > 32 ? new_width : 32))
+	new_height=$((new_height > 32 ? new_height : 32))
+
+	mkdir -p "$HOME/Pictures/zoomed_images"
+	local output_file="$HOME/Pictures/zoomed_images/$(sed 's/[[:space:]]\+/_/g' <<< "$label")_$(date +"%Y%m%d-%H%M%S").png"
+
+	echo "Cropping and resizing image..." >&2
+	magick convert "$image_path" -crop "${crop_width}x${crop_height}+${abs_x1}+${abs_y1}" \
+		-resize "${new_width}x${new_height}" \
+		-filter Lanczos \
+		"$output_file"
+
+	if [ ! -f "$output_file" ]; then
+		echo "Error: Failed to create zoomed image." >&2
+		return 1
+	fi
+
+	echo "$output_file"
+}
+
+function cmd_zoom() {
+	local prompt="$1"
+	local screenshot_temp_file=$(take_screenshot)
+
+	if [ -z "$prompt" ]; then
+		prompt=$(zenity --entry --text="Enter your input:" --title="Input")
+	fi
+
+	local tool_calls
+	tool_calls=$(get_zoom_bbox "$screenshot_temp_file" "$prompt")
+	if [ $? -ne 0 ]; then
+		return 1
+	fi
+
+	echo "LLM requested tool call: $tool_calls"
+
+	local zoomed_image
+	zoomed_image=$(crop_and_zoom_image "$screenshot_temp_file" "$tool_calls")
+	if [ $? -ne 0 ]; then
+		return 1
+	fi
+
+	echo "Zoomed image saved to $zoomed_image"
+	xdg-open "$zoomed_image"
+
+	# Demonstrate feeding the cropped image back into the LLM
+	echo "--------------------------------------------------"
+	echo "Demonstration: Feeding zoomed image back to LLM..."
+	echo "--------------------------------------------------"
+
+	local analysis=$(query_vlm "$zoomed_image" "Describe this zoomed image in detail.")
+	local content=$(echo "$analysis" | jq -r '.choices[0].message.content')
+
+	echo "LLM Analysis of Zoomed Image:"
+	echo "$content"
+}
+
+#######
+# Main execution
+
+COMMAND="$1"
+shift
+
+case "$COMMAND" in
+	zoom)
+		cmd_zoom "$@"
+		;;
+	list)
+		list_models
+		;;
+	help|*)
+		usage
+		;;
+esac
+#######

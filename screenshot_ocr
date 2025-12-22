@@ -1,0 +1,5 @@
+#!/bin/bash
+
+text=$(spectacle --region --background --nonotify -o /proc/self/fd/1 | tesseract - - 2>/dev/null)
+
+echo "$text" | wl-copy

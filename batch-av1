@@ -1,48 +1,111 @@
 #!/bin/bash
 
+# Default values
+CRF=38
+PRESET=4
+ANIME_MODE=false
+FILES=()
+
+# Display help message
+show_help() {
+    echo "Usage: $(basename "$0") [OPTIONS] [FILES...]"
+    echo ""
+    echo "Batch convert video files to AV1 using SVT-AV1."
+    echo ""
+    echo "Options:"
+    echo "  -a, --anime         Enable anime mode (adds film-grain=4)"
+    echo "  -c, --crf VALUE     Set CRF value (default: $CRF)"
+    echo "  -p, --preset VALUE  Set SVT-AV1 preset (default: $PRESET)"
+    echo "  -h, --help          Show this help message"
+    echo ""
+    echo "If no files are provided, all .mp4 files in the current directory will be processed."
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -a|--anime)
+            ANIME_MODE=true
+            shift
+            ;;
+        -c|--crf)
+            CRF="$2"
+            shift 2
+            ;;
+        -p|--preset)
+            PRESET="$2"
+            shift 2
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            show_help
+            exit 1
+            ;;
+        *)
+            FILES+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# If no files provided, default to *.mp4
+if [ ${#FILES[@]} -eq 0 ]; then
+    shopt -s nullglob
+    FILES=(*.mp4)
+fi
+
+if [ ${#FILES[@]} -eq 0 ]; then
+    echo "Error: No files to process."
+    exit 1
+fi
+
+# Construct SVT-AV1 parameters
+SVTAV1_PARAMS="tune=2:sharpness=1:qm-min=2:chroma-qm-max=15:qp-scale-compress-strength=2:enable-variance-boost=1:variance-boost-strength=1:variance-octile=4"
+if [ "$ANIME_MODE" = true ]; then
+    SVTAV1_PARAMS="$SVTAV1_PARAMS:film-grain=4"
+    echo "--- Anime mode enabled ---"
+fi
+
 FFMPEG_OPTIONS=(
     -c:v libsvtav1
-    -crf 38
-    -preset 4
+    -crf "$CRF"
+    -preset "$PRESET"
     -pix_fmt yuv420p10le
-    -svtav1-params "tune=2:sharpness=1:qm-min=2:chroma-qm-max=15:qp-scale-compress-strength=2:enable-variance-boost=1:variance-boost-strength=1:variance-octile=4"
+    -svtav1-params "$SVTAV1_PARAMS"
     -c:a copy
 )
 
-# Use 'shopt -s nullglob' to prevent the loop from running once with literal '*.mp4' 
-# if no files are found. This is a crucial fix for the file-checking logic.
-shopt -s nullglob
-
 echo "--- Starting AV1 Batch Conversion ---"
-echo "--- Searching for *.mp4 files..."
+echo "--- CRF: $CRF, Preset: $PRESET"
 
-# Check if any .mp4 files exist before starting the loop
-MP4_FILES=(*.mp4)
+for INPUT_FILE in "${FILES[@]}"; do
+    if [[ ! -f "$INPUT_FILE" ]]; then
+        echo "--- Skipping: $INPUT_FILE (Not a file)"
+        continue
+    fi
 
-if [ ${#MP4_FILES[@]} -eq 0 ]; then
-    echo "--- No .mp4 files found to process."
-else
-    # Iterate over the array of files found
-    for INPUT_FILE in "${MP4_FILES[@]}"; do
-        # Inside the loop, you only need to process the file, 
-        # as nullglob ensures it's a real file if the loop runs.
-        OUTPUT_FILE="${INPUT_FILE%.mp4}_AV1.mkv"
+    # Determine output filename
+    filename=$(basename -- "$INPUT_FILE")
+    extension="${filename##*.}"
+    filename="${filename%.*}"
+    OUTPUT_FILE="${filename}_AV1.mkv"
 
-        echo "--- Processing: **$INPUT_FILE**"
-        echo "--- Output will be: **$OUTPUT_FILE**"
+    echo "--- Processing: $INPUT_FILE"
+    echo "--- Output: $OUTPUT_FILE"
 
-        # The full command uses -i first, then the options, then the output file
-        ffmpeg -i "$INPUT_FILE" "${FFMPEG_OPTIONS[@]}" "$OUTPUT_FILE"
+    ffmpeg -i "$INPUT_FILE" "${FFMPEG_OPTIONS[@]}" "$OUTPUT_FILE"
 
-        # Check the exit status of the last command (ffmpeg)
-        if [ $? -eq 0 ]; then
-            echo "--- **Finished** processing **$INPUT_FILE** (Success)"
-        else
-            echo "--- **Error** processing **$INPUT_FILE** (FFmpeg failed)"
-            echo "--- **Error** processing **$INPUT_FILE** (FFmpeg failed)" >> ./ffmpeg-error-log.txt
-        fi
-        echo "-------------------------------------"
-    done
-fi
+    if [ $? -eq 0 ]; then
+        echo "--- Finished: $INPUT_FILE (Success)"
+    else
+        echo "--- Error: $INPUT_FILE (FFmpeg failed)"
+        echo "$(date): Error processing $INPUT_FILE" >> ./ffmpeg-error-log.txt
+    fi
+    echo "-------------------------------------"
+done
 
-echo "--- **Batch processing complete!**"
+echo "--- Batch processing complete! ---"
