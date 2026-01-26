@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# Configuration
+ZISO_PATH="$HOME/.local/bin/ziso.py"
+ZISO_URL="https://raw.githubusercontent.com/ps2homebrew/Open-PS2-Loader/master/pc/ziso.py"
+
+# Function to download or update ziso.py
+update_ziso() {
+    echo "Fetching/Updating ziso.py..."
+    mkdir -p "$(dirname "$ZISO_PATH")"
+    if curl -sSL "$ZISO_URL" -o "$ZISO_PATH"; then
+        chmod +x "$ZISO_PATH"
+        echo "ziso.py is ready at $ZISO_PATH"
+    else
+        echo "Error: Failed to download ziso.py"
+        [ -f "$ZISO_PATH" ] || exit 1
+    fi
+}
+
+# Handle update command
+if [ "$1" == "update" ]; then
+    update_ziso
+    exit 0
+fi
+
+# Check if an input file was provided
+if [ -z "$1" ]; then
+    echo "Usage: $(basename "$0") <filename.iso> | update"
+    exit 1
+fi
+
+# Ensure ziso.py is available (download if missing)
+if [ ! -f "$ZISO_PATH" ]; then
+    update_ziso
+fi
+
+# Get the input filename
+INPUT_FILE="$1"
+
+# Generate the output filename by swapping .iso for .zso
+# This uses bash parameter expansion to strip the extension
+OUTPUT_FILE="${INPUT_FILE%.*}.zso"
+
+# Execute the python command
+# Note: "$@" is used to pass the filename safely even with spaces
+"$ZISO_PATH" -c 2 -m "$INPUT_FILE" "$OUTPUT_FILE"

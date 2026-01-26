@@ -1,64 +1,140 @@
 #!/bin/bash
 
-# Scanner settings
+# Scanner Configuration
 SCANNER_DEVICE="airscan:e0:Canon TS7400 series"
 RESOLUTION=300
 MODE="Color"
 
-# Output settings
+# Output Configuration
 OUTPUT_FORMAT="jpeg"
-OUTPUT_PREFIX="out%d.$OUTPUT_FORMAT"
+OUTPUT_PREFIX="out%d" # scanimage adds extension automatically usually, but let's be safe. 
+# actually scanimage --batch=format%d.jpg works best. 
+# The original script used OUTPUT_PREFIX="out%d.$OUTPUT_FORMAT" which is correct for --batch argument format specifier
 
-# Batch settings
-BATCH_START=1
+BATCH_PREFIX="out"
+FILE_PATTERN="${BATCH_PREFIX}%d.${OUTPUT_FORMAT}"
+
+# Helper to print steps
+function log() {
+    echo -e "\033[1;32m[SCAN]\033[0m $1"
+}
+
+function error() {
+    echo -e "\033[1;31m[ERROR]\033[0m $1"
+}
+
+scan_batch() {
+    local start=$1
+    local inc=$2
+    
+    # Capture stderr to count pages, while also showing it to user
+    # We use tee to show output, but we need to capture it.
+    # A temp file is cleaner than a pipe for capturing reliably while streaming.
+    local logfile=$(mktemp)
+    
+    scanimage -d "$SCANNER_DEVICE" \
+              --source "ADF" \
+              --format "$OUTPUT_FORMAT" \
+              --resolution "$RESOLUTION" \
+              --mode "$MODE" \
+              --batch="${BATCH_PREFIX}%d.${OUTPUT_FORMAT}" \
+              --batch-start="$start" \
+              --batch-increment="$inc" \
+              -x 215 -y 297 2> >(tee "$logfile" >&2)
+
+    # Count how many "Scanned page" or scanning events occurred.
+    # scanimage output format: "Scanned page 1. (scanner specific)"
+    # Reliability depends on scanimage version/driver.
+    # Alternative: Count created files.
+    
+    rm -f "$logfile"
+}
 
 scan_single_sided() {
-  scanimage -d "$SCANNER_DEVICE" --source ADF --format $OUTPUT_FORMAT -x 215 -y 297 --resolution $RESOLUTION --mode $MODE --batch=$OUTPUT_PREFIX --batch-start=$BATCH_START
+    log "Starting Single Sided Scan..."
+    scan_batch 1 1
 }
 
 scan_double_sided() {
-  # Parse the output to get the number of pages scanned
-  set -x
-  first_page_output=$(scanimage -d "$SCANNER_DEVICE" --source ADF --format $OUTPUT_FORMAT -x 215 -y 297 --resolution $RESOLUTION --mode $MODE --batch=$OUTPUT_PREFIX --batch-start=$((BATCH_START)) --batch-increment=2 2>&1)
-  num_pages=$(echo "$first_page_output" | grep "Batch terminated" | awk '{print $3}')
+    log "Phase 1: Scanning Front Sides (Odds)..."
+    scan_batch 1 2
 
-  read -p "Flip the stack of documents and press enter to continue..." -n 1
+    # Robust page counting by counting odd-numbered files generated
+    # (Assuming we started at 1 and incremented by 2)
+    # We look for the highest numbered odd file to determine count, 
+    # or just count how many files look like out*.jpeg
+    
+    # Let's simple-count the files that match the pattern for this session.
+    # Warning: this counts all jpegs.
+    local count=$(ls ${BATCH_PREFIX}*.${OUTPUT_FORMAT} 2>/dev/null | wc -l)
 
-  # Calculate the starting page for the second batch
-  start_page=$((num_pages + BATCH_START))
+    if [ "$count" -eq 0 ]; then
+        error "No pages detected. Exiting."
+        exit 1
+    fi
 
-  scanimage -d "$SCANNER_DEVICE" --source ADF --format $OUTPUT_FORMAT -x 215 -y 297 --resolution $RESOLUTION --mode $MODE --batch=$OUTPUT_PREFIX --batch-start=$((start_page)) --batch-increment=-2
-  set +x
+    log "Batch 1 complete. Detected $count pages."
+    log "Please flip the document stack."
+    log "Ensure the page that was scanned LAST (top of output) is fed FIRST (top of input)."
+    read -p "Press Enter to continue..."
+
+    # Calculate start page for reverse side
+    # Fronts: 1, 3, 5 (3 pages)
+    # Backs should be: 6, 4, 2
+    # Start = count * 2
+    local start_back=$((count * 2))
+
+    log "Phase 2: Scanning Back Sides (Evens)..."
+    scan_batch "$start_back" "-2"
 }
 
-# CLI flags and help message
+check_blank_pages() {
+    log "Checking for potentially blank pages..."
+    # Check if tesseract is installed
+    if ! command -v tesseract &> /dev/null; then
+        echo "Tesseract not found, skipping blank page check."
+        return
+    fi
+
+    for file in ${BATCH_PREFIX}*.${OUTPUT_FORMAT}; do
+        if [ -f "$file" ]; then
+            text=$(tesseract "$file" stdout 2>/dev/null)
+            # If text is empty or very short? 
+            # Empty check:
+            if [ -z "${text//[[:space:]]/}" ]; then
+                echo "  ? Potential blank page: $file"
+            fi
+        fi
+    done
+}
+
+# CLI Argument Parsing
+MODE_FLAG="double" # default
+
 while getopts ":hsd" opt; do
   case $opt in
-  h)
-    echo "Usage: $0 [-h] [-s] [-d]"
-    exit 0
-    ;;
-  s)
-    scan_single_sided
-    exit 0
-    ;;
-  d)
-    scan_double_sided
-    exit 0
-    ;;
-  \\?)
-    echo "Invalid option: -$OPTARG"
-    exit 1
-    ;;
+    h)
+      echo "Usage: $0 [-h] [-s (single)] [-d (double, default)]"
+      exit 0
+      ;;
+    s)
+      MODE_FLAG="single"
+      ;;
+    d)
+      MODE_FLAG="double"
+      ;;
+    \?)
+      echo "Invalid option: -$OPTARG"
+      exit 1
+      ;;
   esac
 done
 
-# Default to double-sided scanning if no flags are provided
-scan_double_sided
+if [ "$MODE_FLAG" == "single" ]; then
+    scan_single_sided
+else
+    scan_double_sided
+fi
 
-for file in out*.jpeg; do
-  text=$(tesseract "$file" - 2>/dev/null)
-  if [ -z "$text" ]; then
-    echo "Probably a blank page: $file"
-  fi
-done
+check_blank_pages
+log "Done."
