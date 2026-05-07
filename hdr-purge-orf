@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# hdr-purge-orf
+#
+# Batch delete the .ORF raw files for HDR photos, keeping only the JPGs.
+# Since HDR-mode ORFs are already the merged result, the JPG contains
+# the same in-camera HDR output and the raw offers no re-merge ability.
+#
+# Usage:
+#   ./hdr-purge-orf              # dry-run: show what would be deleted
+#   ./hdr-purge-orf --execute    # actually delete
+#   ./hdr-purge-orf --force      # delete without confirmation
+#   ./hdr-purge-orf -n /path     # dry-run in a different directory
+#   ./hdr-purge-orf --recursive  # recurse into subdirectories
+#
+# The script looks for *.jpg files in the current directory (or given path),
+# checks each for SceneMode=Backlight HDR, then deletes the matching .orf.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Source the detection module
+if [[ ! -f "$SCRIPT_DIR/photo-hdr-detect" ]]; then
+    echo "ERROR: photo-hdr-detect not found alongside this script" >&2
+    exit 1
+fi
+source "$SCRIPT_DIR/photo-hdr-detect"
+
+# --- Arg parsing ---
+DRY_RUN=true
+CONFIRM=true
+RECURSIVE=false
+TARGET_DIR="."
+
+for arg in "$@"; do
+    case "$arg" in
+        --execute|-x)         DRY_RUN=false ;;
+        --force|-f)           CONFIRM=false ;;
+        -n|--dry-run)         DRY_RUN=true ;;
+        --recursive|-r)       RECURSIVE=true ;;
+        -*)
+            echo "Usage: $0 [--execute] [--force] [--recursive] [directory]" >&2
+            echo "  (default: dry-run, prompt before delete)" >&2
+            exit 1
+            ;;
+        *)
+            TARGET_DIR="$arg"
+            ;;
+    esac
+done
+
+if [[ ! -d "$TARGET_DIR" ]]; then
+    echo "ERROR: not a directory: $TARGET_DIR" >&2
+    exit 1
+fi
+
+# --- Collect matching JPG + ORF pairs ---
+shopt -s nullglob
+
+declare -a orphans=()
+count=0
+size_total=0
+
+collect_pairs() {
+    local dir="$1"
+    local jpg_files=("$dir"/*.jpg "$dir"/*.JPG)
+
+    for jpg in "${jpg_files[@]}"; do
+        base="${jpg%.*}"
+        orf="${base}.orf"
+
+        [[ ! -f "$orf" ]] && continue
+
+        if photo_is_hdr "$jpg"; then
+            orphans+=("$orf")
+            local size
+            size=$(stat -c%s "$orf" 2>/dev/null || stat -f%z "$orf" 2>/dev/null)
+            size_total=$((size_total + size))
+            count=$((count + 1))
+        fi
+    done
+}
+
+if $RECURSIVE; then
+    while IFS= read -r -d '' dir; do
+        collect_pairs "$dir"
+    done < <(find "$TARGET_DIR" -type d -print0)
+else
+    collect_pairs "$TARGET_DIR"
+fi
+
+shopt -u nullglob
+
+# --- Report ---
+if [[ $count -eq 0 ]]; then
+    echo "No HDR ORF files to delete in $TARGET_DIR"
+    exit 0
+fi
+
+hr_size=$(numfmt --to=iec "$size_total" 2>/dev/null || echo "${size_total} bytes")
+
+echo "Found $count HDR ORF files ($hr_size total) to delete:"
+for f in "${orphans[@]}"; do
+    echo "  $f"
+done
+
+# --- Dry run ---
+if $DRY_RUN; then
+    echo ""
+    echo "DRY RUN — no files deleted. Re-run with --execute to delete."
+    exit 0
+fi
+
+# --- Confirm ---
+if $CONFIRM; then
+    echo ""
+    read -r -p "Delete these $count files? [y/N] " reply
+    if [[ "$reply" != "y" && "$reply" != "Y" ]]; then
+        echo "Aborted."
+        exit 1
+    fi
+fi
+
+# --- Execute ---
+rm "${orphans[@]}"
+echo "Deleted $count files ($hr_size freed)."

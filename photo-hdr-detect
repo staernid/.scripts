@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# photo-hdr-detect
+# Source-able bash module to detect Olympus in-camera HDR photos.
+# Works with both .ORF (raw) and .JPG files from Olympus OM-D cameras.
+#
+# Usage in your script:
+#   source ./photo-hdr-detect
+#   if photo_is_hdr "P3281356.orf"; then echo "HDR!"; fi
+#   photo_list_hdr *.orf
+#   photo_list_hdr *.jpg
+
+# Check that exiftool is available
+__hdr_check_deps() {
+    if ! command -v exiftool &>/dev/null; then
+        echo "photo-hdr-detect: ERROR: exiftool not found" >&2
+        return 1
+    fi
+}
+
+# Detect if a single photo file was shot in Olympus Backlight HDR mode.
+# Returns 0 (true) if HDR, 1 (false) otherwise.
+# Works on both .ORF and .JPG by checking the MakerNotes SceneMode tag.
+photo_is_hdr() {
+    local file="$1"
+    [[ -z "$file" || ! -f "$file" ]] && return 1
+
+    __hdr_check_deps || return 1
+
+    local scene_mode
+    scene_mode=$(exiftool -s3 -SceneMode "$file" 2>/dev/null)
+    [[ "$scene_mode" == "Backlight HDR" ]]
+}
+
+# Detect if a JPG was produced by the in-camera HDR stacking engine.
+# More definitive than SceneMode: confirms the camera actually merged
+# multiple exposures. Only works on .JPG — ORF always says "No".
+# Returns 0 (true) if HDR1, 1 (false) otherwise.
+photo_is_stacked_hdr() {
+    local file="$1"
+    [[ -z "$file" || ! -f "$file" ]] && return 1
+
+    __hdr_check_deps || return 1
+
+    local stacked
+    stacked=$(exiftool -s3 -StackedImage "$file" 2>/dev/null)
+    [[ "$stacked" == "HDR1" ]]
+}
+
+# Print filenames that are HDR, one per line. Accepts file globs or paths.
+photo_list_hdr() {
+    __hdr_check_deps || return 1
+
+    local f sc
+    for f in "$@"; do
+        [[ ! -f "$f" ]] && continue
+        sc=$(exiftool -s3 -SceneMode "$f" 2>/dev/null)
+        if [[ "$sc" == "Backlight HDR" ]]; then
+            echo "$f"
+        fi
+    done
+}
+
+# Print filenames that are NOT HDR, one per line.
+photo_list_non_hdr() {
+    __hdr_check_deps || return 1
+
+    local f sc
+    for f in "$@"; do
+        [[ ! -f "$f" ]] && continue
+        sc=$(exiftool -s3 -SceneMode "$f" 2>/dev/null)
+        if [[ "$sc" != "Backlight HDR" ]]; then
+            echo "$f"
+        fi
+    done
+}
+
+# Print a summary table for all files passed: filename | HDR? | Stacked? | SceneMode
+photo_hdr_summary() {
+    __hdr_check_deps || return 1
+
+    printf "%-16s %-6s %-8s %s\n" "File" "HDR?" "Stacked" "SceneMode"
+    printf "%-16s %-6s %-8s %s\n" "---" "---" "---" "---"
+
+    local f sc stacked hdr_flag stacked_flag
+    for f in "$@"; do
+        [[ ! -f "$f" ]] && continue
+        sc=$(exiftool -s3 -SceneMode "$f" 2>/dev/null)
+        stacked=$(exiftool -s3 -StackedImage "$f" 2>/dev/null)
+        [[ "$sc" == "Backlight HDR" ]] && hdr_flag="YES" || hdr_flag="no"
+        [[ "$stacked" == "HDR1" ]] && stacked_flag="HDR1" || stacked_flag="-"
+        printf "%-16s %-6s %-8s %s\n" "$(basename "$f")" "$hdr_flag" "$stacked_flag" "$sc"
+    done
+}
