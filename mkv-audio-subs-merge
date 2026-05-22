@@ -1,12 +1,14 @@
 #!/bin/bash
 # USAGE: ./mkv-merge <extra_tracks_source> <video_target>
 
-# Check if exactly two arguments are provided
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <extra_tracks_source> <video_target>"
+# Check if one or two arguments are provided
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    echo "Usage: $0 [extra_tracks_source] <video_target>"
+    echo "   Or: $0 <single_source_to_prune> (extracts audio/subs, drops video)"
     echo ""
-    echo "Example:"
-    echo "$0 low_res_v1.mp4 high_res_v2.mp4"
+    echo "Examples:"
+    echo "  Merge:  $0 low_res_v1.mp4 high_res_v2.mp4"
+    echo "  Prune:  $0 faulty_video.mkv"
     exit 1
 fi
 
@@ -18,11 +20,17 @@ for cmd in mkvmerge jq; do
     fi
 done
 
-EXTRA_SOURCE="$1"
-VIDEO_TARGET="$2"
-
-# Derive an output filename
-OUTPUT_NAME="${VIDEO_TARGET%.*}-merged.mkv"
+if [ "$#" -eq 1 ]; then
+    EXTRA_SOURCE="$1"
+    VIDEO_TARGET=""
+    # Derive an output filename for single-file pruning
+    OUTPUT_NAME="${EXTRA_SOURCE%.*}-extracted.mkv"
+else
+    EXTRA_SOURCE="$1"
+    VIDEO_TARGET="$2"
+    # Derive an output filename for merging
+    OUTPUT_NAME="${VIDEO_TARGET%.*}-merged.mkv"
+fi
 
 # Helper function to list tracks and get selection
 get_track_selection() {
@@ -42,26 +50,39 @@ get_track_selection() {
     echo "$selection"
 }
 
-echo "========================================================"
-echo " PHASE 1: Choose tracks from VIDEO TARGET ($VIDEO_TARGET)"
-echo "========================================================"
-TARGET_AUDIO=$(get_track_selection "$VIDEO_TARGET" "audio" "Audio")
-TARGET_SUBS=$(get_track_selection "$VIDEO_TARGET" "subtitles" "Subtitle")
+if [ -n "$VIDEO_TARGET" ]; then
+    echo "========================================================"
+    echo " PHASE 1: Choose tracks from VIDEO TARGET ($VIDEO_TARGET)"
+    echo "========================================================"
+    TARGET_AUDIO=$(get_track_selection "$VIDEO_TARGET" "audio" "Audio")
+    TARGET_SUBS=$(get_track_selection "$VIDEO_TARGET" "subtitles" "Subtitle")
+    echo ""
+fi
 
-echo ""
 echo "========================================================"
-echo " PHASE 2: Choose tracks from EXTRA SOURCE ($EXTRA_SOURCE)"
+if [ -z "$VIDEO_TARGET" ]; then
+    echo " Choose tracks from SOURCE ($EXTRA_SOURCE)"
+else
+    echo " PHASE 2: Choose tracks from EXTRA SOURCE ($EXTRA_SOURCE)"
+fi
 echo "========================================================"
 EXTRA_AUDIO=$(get_track_selection "$EXTRA_SOURCE" "audio" "Audio")
 EXTRA_SUBS=$(get_track_selection "$EXTRA_SOURCE" "subtitles" "Subtitle")
 
 echo "--------------------------------------------------------"
-echo "Merging Tracks..."
-echo "  Video:           $VIDEO_TARGET"
-echo "  Target Audio:    ${TARGET_AUDIO^^}"
-echo "  Target Subs:     ${TARGET_SUBS^^}"
-echo "  Extra Audio:     ${EXTRA_AUDIO^^}"
-echo "  Extra Subs:      ${EXTRA_SUBS^^}"
+if [ -z "$VIDEO_TARGET" ]; then
+    echo "Extracting Tracks..."
+    echo "  Source:          $EXTRA_SOURCE"
+    echo "  Audio:           ${EXTRA_AUDIO^^}"
+    echo "  Subs:            ${EXTRA_SUBS^^}"
+else
+    echo "Merging Tracks..."
+    echo "  Video:           $VIDEO_TARGET"
+    echo "  Target Audio:    ${TARGET_AUDIO^^}"
+    echo "  Target Subs:     ${TARGET_SUBS^^}"
+    echo "  Extra Audio:     ${EXTRA_AUDIO^^}"
+    echo "  Extra Subs:      ${EXTRA_SUBS^^}"
+fi
 echo "  Output File:     $OUTPUT_NAME"
 echo "--------------------------------------------------------"
 
@@ -69,21 +90,23 @@ echo "--------------------------------------------------------"
 MKV_ARGS=("-o" "$OUTPUT_NAME")
 
 # 1. Processing Video Target
-if [ "$TARGET_AUDIO" != "all" ]; then
-    if [ "$TARGET_AUDIO" == "none" ]; then
-        MKV_ARGS+=("--no-audio")
-    else
-        MKV_ARGS+=("--audio-tracks" "$TARGET_AUDIO")
+if [ -n "$VIDEO_TARGET" ]; then
+    if [ "$TARGET_AUDIO" != "all" ]; then
+        if [ "$TARGET_AUDIO" == "none" ]; then
+            MKV_ARGS+=("--no-audio")
+        else
+            MKV_ARGS+=("--audio-tracks" "$TARGET_AUDIO")
+        fi
     fi
-fi
-if [ "$TARGET_SUBS" != "all" ]; then
-    if [ "$TARGET_SUBS" == "none" ]; then
-        MKV_ARGS+=("--no-subtitles")
-    else
-        MKV_ARGS+=("--subtitle-tracks" "$TARGET_SUBS")
+    if [ "$TARGET_SUBS" != "all" ]; then
+        if [ "$TARGET_SUBS" == "none" ]; then
+            MKV_ARGS+=("--no-subtitles")
+        else
+            MKV_ARGS+=("--subtitle-tracks" "$TARGET_SUBS")
+        fi
     fi
+    MKV_ARGS+=("$VIDEO_TARGET")
 fi
-MKV_ARGS+=("$VIDEO_TARGET")
 
 # 2. Processing Extra Source
 if [ "$EXTRA_AUDIO" != "all" ]; then
@@ -110,7 +133,7 @@ STATUS=$?
 
 if [ $STATUS -eq 0 ] || [ $STATUS -eq 1 ]; then
     echo "--------------------------------------------------------"
-    echo "Success! The merged video is saved as: $OUTPUT_NAME"
+    echo "Success! Saved as: $OUTPUT_NAME"
     [ $STATUS -eq 1 ] && echo "(Note: mkvmerge finished with warnings)"
 else
     echo "--------------------------------------------------------"
